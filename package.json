@@ -1,19 +1,17 @@
 {
-  "name": "bot-pagos-mercantil",
+  "name": "bot-pagomoviles-baileys",
   "version": "1.0.0",
-  "description": "Bot para verificar pagos móviles en Google Sheets",
+  "description": "Bot de WhatsApp ligero con Baileys",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "axios": "^1.6.2",
+    "@whiskeysockets/baileys": "^6.7.7",
+    "axios": "^1.6.7",
+    "express": "^4.19.2",
     "papaparse": "^5.4.1",
-    "puppeteer": "^21.5.0",
-    "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "^1.23.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "pino": "^8.20.0",
+    "qrcode": "^1.5.3"
   }
 }
