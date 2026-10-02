@@ -98,7 +98,7 @@ client.on('message', async message => {
 
                 // Respuestas según coincidencia
                 if (pagoEncontrado) {
-                    await message.reply(`*Si, hay un pago movil registrado con la fecha ${pagoEncontrado.fecha} con el monto ${pagoEncontrado.monto}, el numero de referencia ${pagoEncontrado.referencia} al banco ${pagoEncontrado.banco}*`);
+                    await message.reply(`*Si, hay un pago movil registrado con la fecha ${pagoEncontrado.fecha} con el monto ${pagoEncontrado.monto} Bs, el numero de referencia ${pagoEncontrado.referencia} al banco ${pagoEncontrado.banco}*`);
                 } else {
                     await message.reply('*No, no existe un pago movil registrado con la referencia y monto indicados*');
                 }
@@ -111,7 +111,4 @@ client.on('message', async message => {
     }
 });
 
-client.initialize();
-
-// Iniciamos el bot
 client.initialize();
