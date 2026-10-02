@@ -8,10 +8,10 @@ const pino = require('pino');
 const app = express();
 const port = process.env.PORT || 3000;
 
-let qrBase64 = ''; // Guardará la imagen del QR
+let qrBase64 = ''; 
 let isConnected = false;
 
-// 1. Servidor Web para mostrar el QR en la URL de Render
+// 1. Servidor Web para mostrar el QR
 app.get('/', (req, res) => {
     if (isConnected) {
         res.send('<h1 style="font-family:sans-serif; text-align:center; color:green; margin-top:20%;">¡El bot está conectado y funcionando!</h1>');
@@ -36,14 +36,29 @@ app.listen(port, () => {
     console.log(`Servidor web corriendo en el puerto ${port}`);
 });
 
-// 2. Función principal del Bot con Baileys
+// FUNCIÓN SÚPER FLEXIBLE PARA LEER CUALQUIER MONTO
+function parseMonto(montoStr) {
+    if (!montoStr) return NaN;
+    let limpio = String(montoStr).replace(/[^\d.,]/g, '');
+    let lastDot = limpio.lastIndexOf('.');
+    let lastComma = limpio.lastIndexOf(',');
+    
+    if (lastComma > lastDot) {
+        limpio = limpio.replace(/\./g, '').replace(',', '.');
+    } else if (lastDot > lastComma) {
+        limpio = limpio.replace(/,/g, '');
+    }
+    return parseFloat(limpio);
+}
+
+// 2. Función principal del Bot
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
     const sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
-        logger: pino({ level: 'silent' }) // Silenciamos los logs excesivos
+        logger: pino({ level: 'silent' })
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -59,14 +74,10 @@ async function connectToWhatsApp() {
         if (connection === 'close') {
             isConnected = false;
             const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Conexión cerrada. Reconectando:', shouldReconnect);
-            if (shouldReconnect) {
-                connectToWhatsApp();
-            }
+            if (shouldReconnect) connectToWhatsApp();
         } else if (connection === 'open') {
-            console.log('¡Conectado exitosamente a WhatsApp!');
             isConnected = true;
-            qrBase64 = ''; // Borramos el QR porque ya se conectó
+            qrBase64 = ''; 
         }
     });
 
@@ -76,65 +87,70 @@ async function connectToWhatsApp() {
         if (!msg.message || msg.key.fromMe) return;
 
         const remoteJid = msg.key.remoteJid;
-        // Baileys maneja el texto de diferentes formas dependiendo de si es Android/iOS/Web
         const msgText = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
         const msgLower = msgText.toLowerCase();
 
         if (msgLower.includes('verificar')) {
-            const refMatch = msgLower.match(/r\s*(\d+)/i) || msgLower.match(/(?:ref|referencia)?\s*(\d{5,})/i);
-            const amountMatch = msgLower.match(/(\d+(?:[.,]\d+)?)\s*(?:bs|ves)?/i);
+            // Buscamos la referencia (agarrará los dígitos que le pongas, ej: r998589)
+            const refMatch = msgLower.match(/r\s*(\d+)/i) || msgLower.match(/(?:ref|referencia)?\s*(\d{4,})/i);
 
-            if (refMatch && amountMatch) {
+            if (refMatch) {
                 const refBuscada = refMatch[1];
-                const montoBuscadoStr = amountMatch[1].replace(',', '.');
-                const montoBuscadoNum = parseFloat(montoBuscadoStr);
+                
+                const msgSinRef = msgLower.replace(refMatch[0], '');
+                const amountMatch = msgSinRef.match(/([\d.,]+)\s*(?:bs|ves)?/i);
 
-                const sheetId = '14bLRZ31MdiAT4N-v5ZbymSsHr4cd06ePaA22gmZSTlU';
-                const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
+                if (amountMatch) {
+                    const montoOriginalStr = amountMatch[1];
+                    const montoBuscadoNum = parseMonto(montoOriginalStr); 
 
-                try {
-                    const response = await axios.get(csvUrl);
-                    const parsed = Papa.parse(response.data, { header: true, skipEmptyLines: true });
-                    let pagoEncontrado = null;
+                    const sheetId = '14bLRZ31MdiAT4N-v5ZbymSsHr4cd06ePaA22gmZSTlU';
+                    const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
 
-                    for (const fila of parsed.data) {
-                        const keys = Object.keys(fila);
-                        const keyRef = keys.find(k => k.toLowerCase().includes('ref')) || keys[0];
-                        const keyMonto = keys.find(k => k.toLowerCase().includes('monto')) || keys[1];
-                        const keyFecha = keys.find(k => k.toLowerCase().includes('fecha')) || keys[2];
-                        const keyBanco = keys.find(k => k.toLowerCase().includes('banco')) || keys[4];
+                    try {
+                        const response = await axios.get(csvUrl);
+                        const parsed = Papa.parse(response.data, { header: true, skipEmptyLines: true });
+                        let pagoEncontrado = null;
 
-                        const refEnHoja = String(fila[keyRef] || '').trim();
-                        const montoEnHojaRaw = String(fila[keyMonto] || '').replace(',', '.').trim();
-                        const montoEnHojaNum = parseFloat(montoEnHojaRaw);
+                        for (const fila of parsed.data) {
+                            const keys = Object.keys(fila);
+                            const keyRef = keys.find(k => k.toLowerCase().includes('ref')) || keys[0];
+                            const keyMonto = keys.find(k => k.toLowerCase().includes('monto')) || keys[1];
+                            const keyFecha = keys.find(k => k.toLowerCase().includes('fecha')) || keys[2];
+                            const keyBanco = keys.find(k => k.toLowerCase().includes('banco')) || keys[4];
 
-                        const coincideRef = refEnHoja.includes(refBuscada) || refBuscada.includes(refEnHoja);
-                        const coincideMonto = !isNaN(montoBuscadoNum) && !isNaN(montoEnHojaNum) 
-                            ? Math.abs(montoBuscadoNum - montoEnHojaNum) < 0.01 
-                            : montoEnHojaRaw.includes(montoBuscadoStr);
+                            const refEnHoja = String(fila[keyRef] || '').trim();
+                            const montoEnHojaNum = parseMonto(fila[keyMonto]); 
 
-                        if (coincideRef && coincideMonto) {
-                            pagoEncontrado = {
-                                fecha: fila[keyFecha] || 'Fecha no registrada',
-                                monto: fila[keyMonto] || montoBuscadoStr,
-                                referencia: refEnHoja,
-                                banco: (keyBanco && fila[keyBanco] && fila[keyBanco].trim() !== '') ? fila[keyBanco] : 'Mercantil'
-                            };
-                            break;
+                            // COMPROBACIÓN EXACTA DE ÚLTIMOS DÍGITOS
+                            // Verifica si la referencia guardada termina con los números que tú escribiste
+                            const coincideRef = refEnHoja.endsWith(refBuscada) || refEnHoja === refBuscada;
+                            
+                            const coincideMonto = !isNaN(montoBuscadoNum) && !isNaN(montoEnHojaNum) 
+                                ? Math.abs(montoBuscadoNum - montoEnHojaNum) < 0.01 
+                                : false;
+
+                            if (coincideRef && coincideMonto) {
+                                pagoEncontrado = {
+                                    fecha: fila[keyFecha] || 'Fecha no registrada',
+                                    monto: fila[keyMonto] || montoOriginalStr,
+                                    referencia: refEnHoja, // Muestra la referencia completa en la respuesta
+                                    banco: (keyBanco && fila[keyBanco] && fila[keyBanco].trim() !== '') ? fila[keyBanco] : 'Mercantil'
+                                };
+                                break;
+                            }
                         }
-                    }
 
-                    if (pagoEncontrado) {
-                        // Enviar respuesta exitosa citando el mensaje
-                        await sock.sendMessage(remoteJid, { text: `*Si, hay un pago movil registrado con la fecha ${pagoEncontrado.fecha} con el monto ${pagoEncontrado.monto} Bs, el numero de referencia ${pagoEncontrado.referencia} al banco ${pagoEncontrado.banco}*` }, { quoted: msg });
-                    } else {
-                        // Enviar respuesta negativa
-                        await sock.sendMessage(remoteJid, { text: '*No, no existe un pago movil registrado con la referencia y monto indicados*' }, { quoted: msg });
-                    }
+                        if (pagoEncontrado) {
+                            await sock.sendMessage(remoteJid, { text: `*Si, hay un pago movil registrado con la fecha ${pagoEncontrado.fecha} con el monto ${pagoEncontrado.monto} Bs, el numero de referencia ${pagoEncontrado.referencia} al banco ${pagoEncontrado.banco}*` }, { quoted: msg });
+                        } else {
+                            await sock.sendMessage(remoteJid, { text: '*No, no existe un pago movil registrado con la referencia y monto indicados*' }, { quoted: msg });
+                        }
 
-                } catch (error) {
-                    console.error('Error al consultar Google Sheets:', error.message);
-                    await sock.sendMessage(remoteJid, { text: 'Hubo un error de conexión con la base de datos al intentar verificar el pago.' });
+                    } catch (error) {
+                        console.error('Error al consultar Google Sheets:', error.message);
+                        await sock.sendMessage(remoteJid, { text: 'Hubo un error de conexión con la base de datos al intentar verificar el pago.' });
+                    }
                 }
             }
         }
