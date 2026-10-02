@@ -3,15 +3,25 @@ const qrcode = require('qrcode-terminal');
 const axios = require('axios');
 const Papa = require('papaparse');
 
-// 1. Inicializamos el cliente. LocalAuth guarda la sesión en la carpeta .wwebjs_auth
+// 1. Inicializamos el cliente de WhatsApp
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        headless: true,
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process',
+            '--disable-gpu'
+        ],
     }
 });
 
-// 2. Generamos el código QR en la terminal para que lo vincules
+// 2. Generamos el código QR para vincular
 client.on('qr', (qr) => {
     console.log('Escanea este código QR con tu aplicación de WhatsApp Business:');
     qrcode.generate(qr, { small: true });
@@ -23,83 +33,85 @@ client.on('ready', () => {
 
 // 3. Escuchamos los mensajes entrantes
 client.on('message', async message => {
-    // Convertimos todo a minúsculas para que sea insensible a mayúsculas/minúsculas
     const msgText = message.body.toLowerCase();
 
     // Verificamos si el mensaje contiene la palabra "verificar"
     if (msgText.includes('verificar')) {
         
-        // EXPRESIONES REGULARES (Flexibilidad total de orden y espacios)
-        // Busca una 'r' (con o sin espacio) seguida de números
-        const refMatch = msgText.match(/r\s*(\d+)/); 
-        // Busca números (admite punto o coma decimal) seguidos de 'bs' (con o sin espacio)
-        const amountMatch = msgText.match(/(\d+(?:[.,]\d+)?)\s*bs/);
+        // Expresiones regulares flexibles
+        // Captura la referencia (busca 'r' seguida de números o secuencias numéricas)
+        const refMatch = msgText.match(/r\s*(\d+)/i) || msgText.match(/(?:ref|referencia)?\s*(\d{5,})/i);
+        // Captura el monto (números con punto/coma decimal)
+        const amountMatch = msgText.match(/(\d+(?:[.,]\d+)?)\s*(?:bs|ves)?/i);
 
-        // Si el mensaje tiene tanto una referencia como un monto
         if (refMatch && amountMatch) {
-            const referencia = refMatch[1]; // Extraemos solo los números de la referencia
-            const montoBuscado = amountMatch[1].replace(',', '.'); // Estandarizamos a punto decimal
-            const montoOriginalMatch = amountMatch[0]; // Ej: "500.87bs" tal cual lo escribió
+            const refBuscada = refMatch[1];
+            const montoBuscadoStr = amountMatch[1].replace(',', '.');
+            const montoBuscadoNum = parseFloat(montoBuscadoStr);
 
-            // URL del Google Sheet exportado a CSV
+            // Enlace CSV del Google Sheet
             const sheetId = '14bLRZ31MdiAT4N-v5ZbymSsHr4cd06ePaA22gmZSTlU';
             const csvUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv`;
 
             try {
-                // Descargamos los datos de la hoja de cálculo
                 const response = await axios.get(csvUrl);
 
-                // Parseamos el documento (Asume que la fila 1 tiene encabezados como "Fecha", "Referencia", "Monto")
-                const parsedData = Papa.parse(response.data, {
+                // Parseamos los datos en formato CSV
+                const parsed = Papa.parse(response.data, {
                     header: true,
                     skipEmptyLines: true
                 });
 
                 let pagoEncontrado = null;
 
-                // Buscamos fila por fila
-                for (const fila of parsedData.data) {
-                    // Convertimos todos los valores de la fila a texto en minúsculas para facilitar la búsqueda
-                    const filaValores = Object.values(fila).map(val => String(val).toLowerCase());
+                for (const fila of parsed.data) {
+                    const keys = Object.keys(fila);
+                    
+                    // Identificamos dinámicamente las columnas de la hoja
+                    const keyRef = keys.find(k => k.toLowerCase().includes('ref')) || keys[0];
+                    const keyMonto = keys.find(k => k.toLowerCase().includes('monto')) || keys[1];
+                    const keyFecha = keys.find(k => k.toLowerCase().includes('fecha')) || keys[2];
+                    const keyBanco = keys.find(k => k.toLowerCase().includes('banco')) || keys[4];
 
-                    // Verificamos si algún valor de la fila coincide con la referencia
-                    const tieneRef = filaValores.some(val => val.includes(referencia));
+                    const refEnHoja = String(fila[keyRef] || '').trim();
+                    const montoEnHojaRaw = String(fila[keyMonto] || '').replace(',', '.').trim();
+                    const montoEnHojaNum = parseFloat(montoEnHojaRaw);
 
-                    // Verificamos si algún valor de la fila coincide con el monto
-                    const tieneMonto = filaValores.some(val => {
-                        const valClean = val.replace(',', '.').trim();
-                        // Chequeamos si el monto es exacto o si la celda lo incluye
-                        return valClean === montoBuscado || valClean.includes(montoBuscado);
-                    });
+                    // Verificar si coincide la referencia
+                    const coincideRef = refEnHoja.includes(refBuscada) || refBuscada.includes(refEnHoja);
+                    
+                    // Verificar si coincide el monto
+                    const coincideMonto = !isNaN(montoBuscadoNum) && !isNaN(montoEnHojaNum) 
+                        ? Math.abs(montoBuscadoNum - montoEnHojaNum) < 0.01 
+                        : montoEnHojaRaw.includes(montoBuscadoStr);
 
-                    // Si encontramos una fila que tiene AMBOS valores
-                    if (tieneRef && tieneMonto) {
-                        pagoEncontrado = fila;
-                        break; // Detenemos la búsqueda
+                    if (coincideRef && coincideMonto) {
+                        pagoEncontrado = {
+                            fecha: fila[keyFecha] || 'Fecha no registrada',
+                            monto: fila[keyMonto] || montoBuscadoStr,
+                            referencia: refEnHoja,
+                            banco: (keyBanco && fila[keyBanco] && fila[keyBanco].trim() !== '') ? fila[keyBanco] : 'Mercantil'
+                        };
+                        break;
                     }
                 }
 
+                // Respuestas según coincidencia
                 if (pagoEncontrado) {
-                    // Intentamos ubicar automáticamente cuál es la columna de la fecha
-                    const claves = Object.keys(pagoEncontrado);
-                    const claveFecha = claves.find(k => k.toLowerCase().includes('fecha'));
-                    const fechaDelPago = claveFecha ? pagoEncontrado[claveFecha] : '[Fecha no encontrada en hoja]';
-
-                    // Respuesta de éxito exacta a la que pediste
-                    await message.reply(`*Si, hay un pago movil registrado con la fecha ${fechaDelPago} con el monto ${montoOriginalMatch} y el numero de referencia R${referencia}*`);
+                    await message.reply(`*Si, hay un pago movil registrado con la fecha ${pagoEncontrado.fecha} con el monto ${pagoEncontrado.monto}, el numero de referencia ${pagoEncontrado.referencia} al banco ${pagoEncontrado.banco}*`);
                 } else {
-                    // Respuesta de fallo exacta a la que pediste
                     await message.reply('*No, no existe un pago movil registrado con la referencia y monto indicados*');
                 }
 
             } catch (error) {
-                console.error('Error leyendo Google Sheets:', error.message);
+                console.error('Error al consultar Google Sheets:', error.message);
                 await message.reply('Hubo un error de conexión con la base de datos al intentar verificar el pago.');
             }
-        } 
-        // Si dice verificar pero no puso bien la R o el Bs, el bot simplemente lo ignora (o puedes agregar un else aquí)
+        }
     }
 });
+
+client.initialize();
 
 // Iniciamos el bot
 client.initialize();
